@@ -6,6 +6,7 @@ import com.hmdp.utils.CacheClient;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.RedisIdWorker;
 import org.junit.jupiter.api.Test;
+import org.redisson.api.RedissonClient;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import javax.annotation.Resource;
@@ -25,6 +26,7 @@ class HmDianPingApplicationTests {
 
     @Resource
     private RedisIdWorker redisIdWorker;
+
 
     private ExecutorService es = Executors.newFixedThreadPool(500);
 
@@ -57,4 +59,6 @@ class HmDianPingApplicationTests {
         long end = System.currentTimeMillis();
         System.out.println("time = " + (end - begin));
     }
+
+
 }

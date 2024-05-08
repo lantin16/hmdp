@@ -70,7 +70,8 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements IU
         log.info("发送短信验证码成功，验证码：{}", code);
 
         // 返回ok
-        return Result.ok();
+        return Result.ok(code); // TODO 生成完token后改回下面
+        // return Result.ok();
     }
 
 
