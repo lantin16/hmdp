@@ -34,7 +34,7 @@ class HmDianPingApplicationTests {
     public void testSaveShop() throws InterruptedException {
         Shop shop = shopService.getById(1L);
 
-        cacheClient.setWithLogicalExpire(RedisConstants.CACHE_SHOP_KEY + 1L, shop, 10L, TimeUnit.SECONDS);
+        cacheClient.setWithLogicalExpire(RedisConstants.CACHE_SHOP_KEY + 1L, shop, 10L, TimeUnit.MINUTES);
     }
 
 
