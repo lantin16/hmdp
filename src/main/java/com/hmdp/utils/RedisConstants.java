@@ -27,5 +27,8 @@ public class RedisConstants {
     public static final String USER_SIGN_KEY = "sign:";
     public static final String INCREMENT_ID_KEY = "icr:";
     public static final String ORDER_PREFIX = "order:";
+    public static final String FOLLOWS_KEY = "follows:";
+    // 滚动分页的pageSize
+    public static final Long SCORE_PAGE_SIZE = 2L;
 
 }

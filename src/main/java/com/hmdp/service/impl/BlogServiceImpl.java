@@ -5,25 +5,35 @@ import cn.hutool.core.util.BooleanUtil;
 import cn.hutool.core.util.StrUtil;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.hmdp.dto.Result;
+import com.hmdp.dto.ScrollResult;
 import com.hmdp.dto.UserDTO;
 import com.hmdp.entity.Blog;
+import com.hmdp.entity.Follow;
 import com.hmdp.entity.User;
 import com.hmdp.mapper.BlogMapper;
 import com.hmdp.service.IBlogService;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.hmdp.service.IFollowService;
 import com.hmdp.service.IUserService;
 import com.hmdp.utils.MessageConstants;
 import com.hmdp.utils.RedisConstants;
 import com.hmdp.utils.SystemConstants;
 import com.hmdp.utils.UserHolder;
 import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.ZSetOperations;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.Resource;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
+
+import static com.hmdp.utils.MessageConstants.BLOG_NOT_EXIST;
+import static com.hmdp.utils.MessageConstants.DATABASE_ERROR;
+import static com.hmdp.utils.RedisConstants.*;
+import static com.hmdp.utils.SystemConstants.MAX_PAGE_SIZE;
 
 /**
  * <p>
@@ -38,9 +48,10 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
 
     @Resource
     private IUserService userService;
-
     @Resource
     private StringRedisTemplate stringRedisTemplate;
+    @Resource
+    private IFollowService followService;
 
     /**
      * 查看热门笔记
@@ -53,7 +64,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         // 根据用户查询
         Page<Blog> page = query()
                 .orderByDesc("liked")
-                .page(new Page<>(current, SystemConstants.MAX_PAGE_SIZE));
+                .page(new Page<>(current, MAX_PAGE_SIZE));
         // 获取当前页数据
         List<Blog> records = page.getRecords();
         // 查询用户
@@ -75,7 +86,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         // 1. 查询blog基本信息
         Blog blog = getById(id);
         if (blog == null) {
-            return Result.fail(MessageConstants.BLOG_NOT_EXIST);
+            return Result.fail(BLOG_NOT_EXIST);
         }
 
         // 2. 查询发布该blog的用户，将昵称和头像存入blog
@@ -101,7 +112,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         Long userId = user.getId();
 
         // 2. 判断当前用户是否已经点过赞了
-        String key = RedisConstants.BLOG_LIKED_KEY + blog.getId();
+        String key = BLOG_LIKED_KEY + blog.getId();
         Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
         blog.setIsLike(score != null);
     }
@@ -118,7 +129,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         Long userId = UserHolder.getUser().getId();
 
         // 2. 判断当前登录用户是否已经给这篇笔记点过赞
-        String key = RedisConstants.BLOG_LIKED_KEY + id;    // key就是笔记id，value就是给这篇笔记点过赞的用户id
+        String key = BLOG_LIKED_KEY + id;    // key就是笔记id，value就是给这篇笔记点过赞的用户id
         Double score = stringRedisTemplate.opsForZSet().score(key, userId.toString());
         if (score == null) {    // 查得到score就代表元素存在，查不到返回nil就代表元素不存在
             // 3. 如果未点赞，可以点赞
@@ -126,7 +137,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             boolean success = update().setSql("liked = liked + 1").eq("id", id).update();
 
             if (!success) {
-                return Result.fail(MessageConstants.DATABASE_ERROR);
+                return Result.fail(DATABASE_ERROR);
             }
 
             // 3.2 保存用户到redis的sortedSet zadd key value score
@@ -139,7 +150,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
             boolean success = update().setSql("liked = liked - 1").eq("id", id).update();
 
             if (!success) {
-                return Result.fail(MessageConstants.DATABASE_ERROR);
+                return Result.fail(DATABASE_ERROR);
             }
 
             // 4.2 将用户从redis的set集合中移除
@@ -157,7 +168,7 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
      */
     @Override
     public Result queryBlogLikes(Long id) {
-        String key = RedisConstants.BLOG_LIKED_KEY + id;
+        String key = BLOG_LIKED_KEY + id;
         // 1. 查询top5的点赞用户 zrange key 0 4
         Set<String> top5 = stringRedisTemplate.opsForZSet().range(key, 0, 4);   // 返回的是score排行前五的元素
 
@@ -184,6 +195,42 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
     }
 
     /**
+     * 保存探店笔记
+     * 同时将笔记id写入所有粉丝的收件箱（推模式）
+     * @param blog
+     * @return
+     */
+    @Override
+    public Result saveBlog(Blog blog) {
+        // 1. 获取登录用户
+        Long userId = UserHolder.getUser().getId();
+        blog.setUserId(userId);
+
+        // 2. 保存探店笔记
+        boolean success = save(blog);
+        if (!success) {
+            return Result.fail(DATABASE_ERROR);
+        }
+
+        // 3. 查询笔记作者的所有粉丝 select * from tb_follow where follow_user_id = ?
+        List<Follow> follows = followService.query().eq("follow_user_id", userId).list();
+
+        // 4. 推送笔记id给所有粉丝
+        for (Follow follow : follows) {
+            // 4.1 获取粉丝id
+            Long fanId = follow.getUserId();
+            // 4.2 推送粉丝的收件箱
+            String key = FEED_KEY + fanId;
+            stringRedisTemplate.opsForZSet().add(key, blog.getId().toString(), System.currentTimeMillis());
+        }
+
+        // 返回id
+        return Result.ok(blog.getId());
+    }
+
+
+
+    /**
      * 查询发布该blog的用户，将昵称和头像存入blog
      * @param blog
      */
@@ -192,5 +239,68 @@ public class BlogServiceImpl extends ServiceImpl<BlogMapper, Blog> implements IB
         User user = userService.getById(userId);
         blog.setName(user.getNickName());
         blog.setIcon(user.getIcon());
+    }
+
+
+    /**
+     * 查看已关注用户发布的博客消息
+     * 查看用户自己的收件箱
+     * TODO 这里offset用上一页中score等于minTime的个数其实并不严谨，如果有多页都为同一个score/时间戳，那么这样写只能跳过上一页的记录个数，多翻几页会发现还是会有重复显示（当然这种情况概率很小）
+     * @param max
+     * @param offset
+     * @return
+     */
+    @Override
+    public Result queryBlogOfFollow(Long max, Integer offset) {
+        // 1. 获取当前用户
+        Long userId = UserHolder.getUser().getId();
+
+        // 2. 查询自己的收件箱    ZREVRANGEBYSCORE key max min WITHSCORES LIMIT offset count
+        String key = FEED_KEY + userId;
+        Set<ZSetOperations.TypedTuple<String>> typedTuples = stringRedisTemplate.opsForZSet()
+                .reverseRangeByScoreWithScores(key, 0, max, offset, SCORE_PAGE_SIZE);
+
+        // 3. 非空判断
+        if (typedTuples == null || typedTuples.isEmpty()) {
+            return Result.ok(); // 没有更多内容了
+        }
+
+        // 4. 解析数据：blogId, minTime（时间戳）, offset
+        ArrayList<Long> blogIds = new ArrayList<>(typedTuples.size());
+        long minTime = 0;
+        int os = 1; // 记录这一页中score等于minTime的个数
+        for (ZSetOperations.TypedTuple<String> tuple : typedTuples) {
+            // 4.1 获取blogId
+            blogIds.add(Long.valueOf(tuple.getValue()));
+            // 4.2 获取score/时间戳
+            long time = tuple.getScore().longValue();
+            if (time == minTime) {
+                os++;
+            } else {    // 遇到更小的时间戳
+                minTime = time; // 更新minTime
+                os = 1; // 重置os
+            }
+        }
+
+        // 5. 根据blogId查询blog
+        // 注意用listByIds(blogIds)是基于mysql的in查的，会自动按照id排序，不能保证原来的顺序，如果想保持原来查出的score顺序要像下面这样写
+        String idStr = StrUtil.join(",", blogIds);
+        List<Blog> blogs = query().in("id", blogIds).last("ORDER BY FIELD(id," + idStr + ")").list();
+
+        // 6. 仍然要查写blog的用户以及自己是否给blog点过赞
+        blogs.stream()
+                .forEach(blog -> {
+                    queryBlogUser(blog);
+                    isBlogLiked(blog);
+                });
+
+        // 6. 封装结果并返回
+        ScrollResult result = ScrollResult.builder()
+                .list(blogs)
+                .minTime(minTime)
+                .offset(os)
+                .build();
+
+        return Result.ok(result);
     }
 }
