@@ -100,4 +100,23 @@ public class UserController {
     }
 
 
+    /**
+     * 用户签到
+     * @return
+     */
+    @PostMapping("/sign")
+    public Result sign() {
+        return userService.sign();
+    }
+
+
+    /**
+     * 统计当前用户截至当前时间在本月的连续签到天数
+     * @return
+     */
+    @GetMapping("/sign/count")
+    public Result signCount() {
+        return userService.signCount();
+    }
+
 }
